@@ -44,3 +44,4 @@ server.key
 
 # octoforce files
 auth/sandbox-login-url*.txt
+auth/sandbox-login-url-main-uat.txt.enc

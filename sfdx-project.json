@@ -7,7 +7,7 @@
   ],
   "name": "octoforce-actions",
   "namespace": "",
-  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sfdcLoginUrl": "https://bancoconsorcio--devops01.sandbox.lightning.force.com",
   "sourceApiVersion": "55.0",
   "plugins": {
     "sfdx-plugin-prettier": {
