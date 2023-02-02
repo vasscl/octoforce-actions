@@ -45,3 +45,4 @@ server.key
 # octoforce files
 auth/sandbox-login-url*.txt
 auth/sandbox-login-url-main-uat.txt.enc
+artifacts/deploy_artifact/force-app/main/default/layouts/Opportunity-Sales Negocio Multiproducto Banco.layout-meta.xml
