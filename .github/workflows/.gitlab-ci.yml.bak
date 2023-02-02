@@ -1,0 +1,401 @@
+---
+image: registry.gitlab.com/consorcioservicios/deploy_sfdx
+stages:
+- ".pre"
+- build
+- test
+- deploy
+- ".post"
+variables:
+  OUTPUT_DIR: deploy_artifact
+".build":
+  stage: build
+  script:
+  - cp /opt/backup.sh . && chmod +x backup.sh
+  - "./backup.sh $OUTPUT_DIR $SOURCE_BRANCH $TARGET_BRANCH"
+  artifacts:
+    paths:
+    - "$OUTPUT_DIR"
+".test":
+  environment:
+    url: "$ENVIRONMENT_URL"
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - rm -rf ./deploy_sfdx/force-app && cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+  - cd deploy_sfdx
+  - cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - ''
+  - "./convert_and_deploy.sh $ENVIRONMENT_NAME"
+  artifacts:
+    paths:
+    - "./deploy_sfdx/deploy.zip"
+    - "./deploy_sfdx/checkonly_errors.txt"
+".deploy":
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  environment:
+    url: "$ENVIRONMENT_URL"
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - cd deploy_sfdx
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - tests=""
+  - unzip deploy.zip
+  - "if [ -d ./deploy/classes ]; then\n  tests=\"$(find ./deploy/classes -iname '*test*cls'
+    | xargs -n 1 basename | sed 's/.[^.]*$//' | sort | sed -n -e 'H;${x;s/\\n/,/g;s/^,//;p;}')\"\nfi
+    \ \n"
+  - |
+    if [ "${tests}" != "" ]; then
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests"
+      sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests
+    else
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME"
+      sfdx force:mdapi:legacy:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME
+    fi
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "web"
+    when: never
+build:web:
+  stage: build
+  script:
+  - cp /opt/backup.sh . && chmod +x backup.sh
+  - "./backup.sh $OUTPUT_DIR $SOURCE_BRANCH $TARGET_BRANCH"
+  artifacts:
+    paths:
+    - "$OUTPUT_DIR"
+  variables:
+    SOURCE_BRANCH: "$CI_COMMIT_BRANCH"
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^feature/ && $TARGET_BRANCH
+      =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^hotfix/ && $TARGET_BRANCH
+      == "master"
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^deployment/ && $TARGET_BRANCH
+      == "master"
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^redeploy-uat-/ &&
+      $TARGET_BRANCH =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^redeploy-sit-/ &&
+      $TARGET_BRANCH =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^sprint-/ && $TARGET_BRANCH
+      == "master"
+build:merge_request:
+  stage: build
+  script:
+  - cp /opt/backup.sh . && chmod +x backup.sh
+  - "./backup.sh $OUTPUT_DIR $SOURCE_BRANCH $TARGET_BRANCH"
+  artifacts:
+    paths:
+    - "$OUTPUT_DIR"
+  variables:
+    SOURCE_BRANCH: "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+    TARGET_BRANCH: "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^feature/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^hotfix/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^deployment/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-uat-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-sit-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^sprint-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+build:tag_pipeline:
+  stage: build
+  script:
+  - cp /opt/backup.sh . && chmod +x backup.sh
+  - "./backup.sh $OUTPUT_DIR $SOURCE_BRANCH $TARGET_BRANCH"
+  artifacts:
+    paths:
+    - "$OUTPUT_DIR"
+  before_script:
+  - export TARGET_BRANCH=$(git tag --sort -creatordate | xargs printf "%s\n" | sed
+    -n 2p)
+  - export SOURCE_BRANCH=$CI_COMMIT_TAG
+  rules:
+  - if: "$CI_COMMIT_TAG"
+test:sit:
+  stage: test
+  environment:
+    name: SIT
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - rm -rf ./deploy_sfdx/force-app && cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+  - cd deploy_sfdx
+  - cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - ''
+  - "./convert_and_deploy.sh $ENVIRONMENT_NAME"
+  artifacts:
+    paths:
+    - "./deploy_sfdx/deploy.zip"
+    - "./deploy_sfdx/checkonly_errors.txt"
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^feature/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^feature/ && $TARGET_BRANCH
+      =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-sit-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^redeploy-sit-/ &&
+      $TARGET_BRANCH =~ /^sprint-/
+test:devhotfix:
+  stage: test
+  environment:
+    name: DEVHOTFIX
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - rm -rf ./deploy_sfdx/force-app && cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+  - cd deploy_sfdx
+  - cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - ''
+  - "./convert_and_deploy.sh $ENVIRONMENT_NAME"
+  artifacts:
+    paths:
+    - "./deploy_sfdx/deploy.zip"
+    - "./deploy_sfdx/checkonly_errors.txt"
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^hotfix/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^hotfix/ && $TARGET_BRANCH
+      == "master"
+test:uat:
+  stage: test
+  environment:
+    name: UAT
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - rm -rf ./deploy_sfdx/force-app && cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+  - cd deploy_sfdx
+  - cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - ''
+  - "./convert_and_deploy.sh $ENVIRONMENT_NAME"
+  artifacts:
+    paths:
+    - "./deploy_sfdx/deploy.zip"
+    - "./deploy_sfdx/checkonly_errors.txt"
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^release-\d+.\d+.0$/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^deployment/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^deployment/ && $TARGET_BRANCH
+      == "master"
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-uat-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^redeploy-uat-/ &&
+      $TARGET_BRANCH =~ /^sprint-/
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^sprint-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+  - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_REF_SLUG =~ /^sprint-/ && $TARGET_BRANCH
+      == "master"
+test:produccion:
+  stage: test
+  environment:
+    name: PRODUCCION
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - rm -rf ./deploy_sfdx/force-app && cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+  - cd deploy_sfdx
+  - cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - ''
+  - "./convert_and_deploy.sh $ENVIRONMENT_NAME"
+  artifacts:
+    paths:
+    - "./deploy_sfdx/deploy.zip"
+    - "./deploy_sfdx/checkonly_errors.txt"
+  rules:
+  - if: "$CI_COMMIT_TAG"
+deploy:sit:
+  stage: deploy
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  environment:
+    name: SIT
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - cd deploy_sfdx
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - tests=""
+  - unzip deploy.zip
+  - "if [ -d ./deploy/classes ]; then\n  tests=\"$(find ./deploy/classes -iname '*test*cls'
+    | xargs -n 1 basename | sed 's/.[^.]*$//' | sort | sed -n -e 'H;${x;s/\\n/,/g;s/^,//;p;}')\"\nfi
+    \ \n"
+  - |
+    if [ "${tests}" != "" ]; then
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests"
+      sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests
+    else
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME"
+      sfdx force:mdapi:legacy:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME
+    fi
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^feature/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+    when: manual
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-sit-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+    when: manual
+  dependencies:
+  - test:sit
+deploy:devhotfix:
+  stage: deploy
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  environment:
+    name: DEVHOTFIX
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - cd deploy_sfdx
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - tests=""
+  - unzip deploy.zip
+  - "if [ -d ./deploy/classes ]; then\n  tests=\"$(find ./deploy/classes -iname '*test*cls'
+    | xargs -n 1 basename | sed 's/.[^.]*$//' | sort | sed -n -e 'H;${x;s/\\n/,/g;s/^,//;p;}')\"\nfi
+    \ \n"
+  - |
+    if [ "${tests}" != "" ]; then
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests"
+      sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests
+    else
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME"
+      sfdx force:mdapi:legacy:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME
+    fi
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^hotfix/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+    when: manual
+  dependencies:
+  - test:devhotfix
+deploy:uat:
+  stage: deploy
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  environment:
+    name: UAT
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - cd deploy_sfdx
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - tests=""
+  - unzip deploy.zip
+  - "if [ -d ./deploy/classes ]; then\n  tests=\"$(find ./deploy/classes -iname '*test*cls'
+    | xargs -n 1 basename | sed 's/.[^.]*$//' | sort | sed -n -e 'H;${x;s/\\n/,/g;s/^,//;p;}')\"\nfi
+    \ \n"
+  - |
+    if [ "${tests}" != "" ]; then
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests"
+      sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests
+    else
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME"
+      sfdx force:mdapi:legacy:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME
+    fi
+  rules:
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^release-\d+.\d+.0$/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+    when: manual
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^deployment/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+    when: manual
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^redeploy-uat-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^sprint-/
+    when: manual
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_COMMIT_REF_SLUG =~ /^sprint-/
+      && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+    when: manual
+  dependencies:
+  - test:uat
+deploy:produccion:
+  stage: deploy
+  before_script:
+  - export SFDX_AUDIENCE_URL=https://test.salesforce.com
+  environment:
+    name: PRODUCCION
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+  - cd deploy_sfdx
+  - 'sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid
+    $SF_CONSUMER_KEY  --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+
+    '
+  - tests=""
+  - unzip deploy.zip
+  - "if [ -d ./deploy/classes ]; then\n  tests=\"$(find ./deploy/classes -iname '*test*cls'
+    | xargs -n 1 basename | sed 's/.[^.]*$//' | sort | sed -n -e 'H;${x;s/\\n/,/g;s/^,//;p;}')\"\nfi
+    \ \n"
+  - |
+    if [ "${tests}" != "" ]; then
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests"
+      sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME -l RunSpecifiedTests -r $tests
+    else
+      echo "Deploy command: sfdx force:mdapi:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME"
+      sfdx force:mdapi:legacy:deploy -w -1 -f deploy.zip -u $ENVIRONMENT_NAME
+    fi
+  rules:
+  - if: "$CI_COMMIT_TAG =~ /^v\\d+.\\d+.\\d+/"
+    when: manual
+  dependencies:
+  - test:produccion

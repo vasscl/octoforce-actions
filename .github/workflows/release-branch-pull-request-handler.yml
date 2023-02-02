@@ -2,6 +2,8 @@ name: Release Branch Pull Request Handler
 on:
   pull_request:
     branches:
+      - main
+
 jobs:
   deploy-to-uat-sandbox:
     runs-on: ubuntu-latest

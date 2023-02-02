@@ -1,0 +1,51 @@
+name: Salesforce Deployment
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+env:
+  ENVIRONMENT_URL: https://test.salesforce.com
+  OUTPUT_DIR: deploy_artifact
+  SFDX_AUDIENCE_URL: https://test.salesforce.com
+
+jobs:
+  build-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy backup script
+        run: |
+          cp /opt/backup.sh . && chmod +x backup.sh
+          ./backup.sh $OUTPUT_DIR $GITHUB_HEAD_REF $GITHUB_BASE_REF
+      - name: Store build artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: deploy_artifact
+          path: "$OUTPUT_DIR"
+
+  test-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create SFDX Project
+        run: sfdx force:project:create --projectname deploy_sfdx --template empty --manifest
+
+      - name: Copy force-app directory
+        run: cp -r $OUTPUT_DIR/force-app ./deploy_sfdx/force-app
+
+      # - name: Change to project directory
+      #   run: cd deploy_sfdx
+
+      - name: Copy and convert script
+        working-directory: ./deploy_sfdx
+        run: |
+          cp /opt/convert_and_deploy.sh . && chmod +x convert_and_deploy.sh
+          sfdx force:auth:jwt:grant -r $ENVIRONMENT_URL --setalias $ENVIRONMENT_NAME --clientid $SF_CONSUMER_KEY --jwtkeyfile /opt/certificates/server.key --username $SF_USERNAME
+          ./convert_and_deploy.sh $ENVIRONMENT_NAME
+
+      - name: Store test artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: deploy_sfdx
+          path: "./deploy_sfdx"
